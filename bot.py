@@ -35,7 +35,7 @@ URL_PATTERN = re.compile(
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Salom! 👋\n\n"
+        "Salom! ð\n\n"
         "Menga Instagram yoki TikTok'dan video linkini yuboring.\n"
         "Men sizga:\n"
         "1) Original videoni (watermarksiz, mp4)\n"
@@ -68,6 +68,22 @@ def download_video(url: str, out_dir: str) -> str:
         return filepath
 
 
+def make_ios_compatible(src_path: str, out_dir: str) -> str:
+    """Videoni iOS Galereyaga saqlash uchun mos formatga o'tkazadi
+    (H.264 + AAC, faststart metadata)."""
+    dst_path = os.path.join(out_dir, "final.mp4")
+    cmd = [
+        FFMPEG_PATH, "-y", "-i", src_path,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        dst_path,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    return dst_path
+
+
 def convert_video_format(src_path: str, out_dir: str, ext: str = "mkv") -> str:
     """Videoni boshqa konteyner formatiga o'giradi (qayta kodlashsiz, tez)."""
     dst_path = os.path.join(out_dir, f"video_converted.{ext}")
@@ -98,15 +114,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url = match.group(1)
-    status_msg = await update.message.reply_text("⏳ Video yuklanmoqda...")
+    status_msg = await update.message.reply_text("â³ Video yuklanmoqda...")
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         try:
             video_path = download_video(url, tmp_dir)
         except Exception as e:
             logger.exception("Yuklab olishda xatolik")
-            await status_msg.edit_text(f"❌ Videoni yuklab bo'lmadi: {e}")
+            await status_msg.edit_text(f"â Videoni yuklab bo'lmadi: {e}")
             return
+
+        try:
+            final_video_path = make_ios_compatible(video_path, tmp_dir)
+        except Exception:
+            logger.exception("iOS-mos formatga o'tkazishda xatolik, original yuboriladi")
+            final_video_path = video_path
 
         try:
             converted_path = convert_video_format(video_path, tmp_dir, ext="mkv")
@@ -120,14 +142,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.exception("Audio ajratishda xatolik")
             audio_path = None
 
-        await status_msg.edit_text("📤 Fayllar yuborilmoqda...")
+        await status_msg.edit_text("ð¤ Fayllar yuborilmoqda...")
 
-        # Original video (mp4)
-        if os.path.getsize(video_path) <= MAX_TELEGRAM_SIZE:
-            with open(video_path, "rb") as f:
-                await update.message.reply_video(f, caption="Original video (mp4)")
+        # Original video (mp4, iOS/Android galereyaga saqlanadigan formatda)
+        if os.path.getsize(final_video_path) <= MAX_TELEGRAM_SIZE:
+            with open(final_video_path, "rb") as f:
+                await update.message.reply_video(
+                    f, caption="Original video (mp4)", supports_streaming=True
+                )
         else:
-            await update.message.reply_text("⚠️ Original video 50MB dan katta, yuborib bo'lmadi.")
+            await update.message.reply_text("â ï¸ Original video 50MB dan katta, yuborib bo'lmadi.")
 
         # Konvertatsiya qilingan video (mkv)
         if converted_path and os.path.exists(converted_path):
@@ -135,7 +159,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 with open(converted_path, "rb") as f:
                     await update.message.reply_document(f, caption="Boshqa formatdagi video (mkv)")
             else:
-                await update.message.reply_text("⚠️ Konvertatsiya qilingan video 50MB dan katta.")
+                await update.message.reply_text("â ï¸ Konvertatsiya qilingan video 50MB dan katta.")
 
         # Musiqa (mp3)
         if audio_path and os.path.exists(audio_path):
